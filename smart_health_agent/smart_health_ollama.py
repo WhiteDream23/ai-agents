@@ -9,7 +9,7 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 
 # Define Ollama configuration - change this value to match your Ollama host on Google Cloud Run
-OLLAMA_HOST = ""
+OLLAMA_HOST = "http://localhost:11434"
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END, START
@@ -24,17 +24,19 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # Optional Google Fitness imports (if user selects Google Fit)
 from google_fit_utils import get_google_fitness_data
 
-# RAG / Milvus imports
-from langchain_milvus import Milvus
+# RAG / FAISS imports
+from langchain_community.vectorstores import FAISS
+
 
 # Import document processor helper module
 import document_processor as dp
 
 # Global LLM instance
 llm = OllamaLLM(
-    model='gemma3:4b-it-q4_K_M',
+    model='qwen3:4B',
     temperature=0.2,
     streaming=True,
+    reasoning=False,
     base_url=OLLAMA_HOST
 )
 
@@ -234,6 +236,7 @@ def RecommendationAgent(state: HealthAgentState) -> HealthAgentState:
     state.recommendations.append(AIMessage(content=response))
     state.agent_reasoning["Recommendations"] = f"Generated personalized health plan (recommending {weather_data.get('exercise_recommendation')} activities)"
     print("[RECOMMENDATION_AGENT] Generated recommendations successfully")
+    print(f"[RECOMMENDATION_AGENT] Recommendations: {response[:100]}...")  # Print first 100 chars
     return state
 
 # Add global variable to store the vectorstore
@@ -257,6 +260,21 @@ def setup_rag_components(docs_folder: str):
             model_kwargs={'device': 'cpu'}
         )
         
+        # Check if FAISS vectorstore already exists on disk
+        faiss_db_path = "./faiss_health_db"
+        if os.path.exists(faiss_db_path):
+            print(f"[RAG_SETUP] Loading existing FAISS vectorstore from {faiss_db_path}")
+            try:
+                global_vectorstore = FAISS.load_local(
+                    faiss_db_path, 
+                    embeddings, 
+                    allow_dangerous_deserialization=True
+                )
+                print("[RAG_SETUP] Successfully loaded existing vectorstore.")
+                return global_vectorstore
+            except Exception as e:
+                print(f"[RAG_SETUP] Error loading existing vectorstore: {e}. Creating new one.")
+        
         print(f"[RAG_SETUP] Processing documents from: {docs_folder}")
         documents = dp.process_health_documents(docs_folder, is_directory=True)
         print(f"[RAG_SETUP] Document processing complete. Found {len(documents)} documents.")
@@ -268,16 +286,14 @@ def setup_rag_components(docs_folder: str):
         chunked_docs = dp.chunk_documents(documents)
         print(f"[RAG_SETUP] Chunked documents into {len(chunked_docs)} chunks.")
 
-        print("[RAG_SETUP] Creating Milvus vectorstore instance.")
-        global_vectorstore = Milvus(
-            embedding_function=embeddings,
-            connection_args={"uri": "./milvus_health.db"},
-            collection_name="health_docs_rag",
-            index_params={"metric_type": "L2", "index_type": "FLAT", "params": {"nlist": 1024}},
-            auto_id=True
+        print("[RAG_SETUP] Creating FAISS vectorstore instance.")
+        global_vectorstore = FAISS.from_documents(
+            documents=chunked_docs,
+            embedding=embeddings
         )
-        print(f"[RAG_SETUP] Adding {len(chunked_docs)} chunks to the vectorstore.")
-        global_vectorstore.add_documents(chunked_docs)
+        print(f"[RAG_SETUP] Added {len(chunked_docs)} chunks to the vectorstore.")
+        # Save the vectorstore to disk for persistence
+        global_vectorstore.save_local("./faiss_health_db")
         print("[RAG_SETUP] Documents successfully added to the vectorstore.")
     else:
         print("[RAG_SETUP] Using existing vectorstore.")
@@ -304,10 +320,14 @@ def chat_interact(user_message, chat_history):
     else:
         print("[CHAT] Warning: No vectorstore available for context retrieval.")
     
-    history_str = "\n".join([
-        f"User: {h['content'] if h['role'] == 'user' else ''}\nAI: {h['content'] if h['role'] == 'assistant' else ''}"
-        for h in chat_history if h['content']
-    ])
+
+    history_str = ""
+    for h in chat_history:
+        if h.get('content'):
+            if h['role'] == 'user':
+                history_str += f"User: {h['content']}\n"
+            elif h['role'] == 'assistant':
+                history_str += f"AI: {h['content']}\n"
     
     prompt = f"""Context from medical documents: {context}
 
@@ -318,15 +338,20 @@ def chat_interact(user_message, chat_history):
         AI:"""
     
     chat_history.append({"role": "user", "content": user_message})
-    chat_history.append({"role": "assistant", "content": ""})
+    chat_history.append({"role": "assistant", "content": "```"})
     
     print("[CHAT] Generating response...")
+    # 流式生成
     for chunk in llm.stream(prompt):
         chat_history[-1]["content"] += chunk
         yield "", chat_history
-    
+        import time
+        time.sleep(0.05)  # 控制速度，模拟真实流式
+    chat_history[-1]["content"]+="```"
+    yield "", chat_history
     print("[CHAT] Completed response")
     return "", chat_history
+
 
 def build_health_workflow():
     """
@@ -600,11 +625,8 @@ def create_ui():
     return demo
 
 if __name__ == "__main__":
-    with gr.Blocks(
-        theme=gr.themes.Base(),
-        title="Smart Health Agent"
-    ) as demo:
-        create_ui()
+
+    demo=create_ui()
     
     demo.queue()
     demo.launch(

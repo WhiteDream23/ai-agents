@@ -10,6 +10,7 @@ from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaLLM
 
+
 # Import Ollama host configuration from the main module
 try:
     from smart_health_ollama import OLLAMA_HOST
@@ -136,31 +137,31 @@ def get_pdf_documents(pdf_file):
                        if block[-1] == 0 and not (block[1] < page.rect.height * 0.1 or block[3] > page.rect.height * 0.9)]
         grouped_text_blocks = process_text_blocks(text_blocks)
         
-        table_docs, table_bboxes, ongoing_tables = parse_all_tables(pdf_file.name, page, i, text_blocks, ongoing_tables)
-        all_pdf_documents.extend(table_docs)
+        # table_docs, table_bboxes, ongoing_tables = parse_all_tables(pdf_file.name, page, i, text_blocks, ongoing_tables)
+        # all_pdf_documents.extend(table_docs)
 
-        image_docs = parse_all_images(pdf_file.name, page, i, text_blocks)
-        all_pdf_documents.extend(image_docs)
+        # image_docs = parse_all_images(pdf_file.name, page, i, text_blocks)
+        # all_pdf_documents.extend(image_docs)
 
         for text_block_ctr, (heading_block, content) in enumerate(grouped_text_blocks, 1):
             heading_bbox = fitz.Rect(heading_block[:4])
-            if not any(heading_bbox.intersects(table_bbox) for table_bbox in table_bboxes):
-                text_doc = Document(
-                    page_content=f"{heading_block[4]}\\n{content}",
-                    metadata={
-                        "source": f"{pdf_file.name if hasattr(pdf_file, 'name') else 'unknown_pdf'}-page{i}-block{text_block_ctr}",
-                        "type": "text",
-                        "page_num": i,
-                        "caption": "",
-                        "x1": heading_block[0],
-                        "y1": heading_block[1],
-                        "x2": heading_block[2],
-                        "x3": heading_block[3],
-                        "dataframe_path": "",
-                        "image_path": ""
-                    }
-                )
-                all_pdf_documents.append(text_doc)
+            # if not any(heading_bbox.intersects(table_bbox) for table_bbox in table_bboxes):
+            text_doc = Document(
+                page_content=f"{heading_block[4]}\\n{content}",
+                metadata={
+                    "source": f"{pdf_file.name if hasattr(pdf_file, 'name') else 'unknown_pdf'}-page{i}-block{text_block_ctr}",
+                    "type": "text",
+                    "page_num": i,
+                    "caption": "",
+                    "x1": heading_block[0],
+                    "y1": heading_block[1],
+                    "x2": heading_block[2],
+                    "x3": heading_block[3],
+                    "dataframe_path": "",
+                    "image_path": ""
+                }
+            )
+            all_pdf_documents.append(text_doc)
 
     f.close()
     return all_pdf_documents
